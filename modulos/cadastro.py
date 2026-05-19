@@ -1,4 +1,5 @@
 import streamlit as st
+import psycopg2
 from psycopg2 import extras
 import pandas as pd
 import time
