@@ -1,8 +1,8 @@
 import streamlit as st
-import psycopg2
+from psycopg2 import extras
 import bcrypt
 import pandas as pd
-from modulos.database import obtener_conexao  # CORRIGIDO DE obter PARA obtener
+from Modulos.database import obtener_conexao  # CORRIGIDO DE obter PARA obtener
 
 def enviar_pre_cadastro(nome, email, cpf, telefone, plano, senha):
     try:

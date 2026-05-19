@@ -1,4 +1,4 @@
-import psycopg2
+from psycopg2 import extras
 import streamlit as st
 
 try:
