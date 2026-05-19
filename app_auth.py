@@ -1,189 +1,259 @@
 import streamlit as st
 import bcrypt
 import qrcode
+import time
+import threading
+from datetime import datetime
 from io import BytesIO
 
-# IMPORTANDO A TELA DO MÓDULO ISOLADO
+# IMPORTANDO AS TELAS E LOGICAS DOS MÓDULOS ISOLADOS
 from modulos.cadastro import exibir_tela_cadastro
 from modulos.aluno_publico import exibir_formulario_aluno
+from modulos.database import obtener_conexao, criar_tabela_alunos
 
-# IMPORTANDO AS FUNÇÕES DO BANCO DE DADOS DA PASTA MODULOS
-from modulos.database import obter_conexao, criar_tabela_alunos
-
-# Garante que as tabelas existam assim que o sistema inicializar
-criar_tabela_alunos()
-
-# ==============================================================================
-# 1. CONFIGURAÇÃO DA PÁGINA (Deve ser o primeiro comando Streamlit do script)
-# ==============================================================================
-st.set_page_config(page_title="Sistema Academia", page_icon="💪", layout="centered")
+# IMPORTANDO OS DESIGNERS INJETÁVEIS DA PASTA STYLE
+from style.auth_style import aplicar_estilo_auth
+from style.cadastro_style import aplicar_estilo_cadastro
+from style.aluno_style import aplicar_estilo_aluno
 
 # ==============================================================================
-# 2. INICIALIZAÇÃO DOS ESTADOS DE SESSÃO
+# 1. CONFIGURAÇÃO DA PÁGINA E INICIALIZAÇÃO DA SESSÃO (TOPO ABSOLUTO)
 # ==============================================================================
+# Define o título da aba do navegador, o ícone e centraliza o layout na tela
+st.set_page_config(page_title="Sistema Lourenço Filho BJJ", page_icon="💪", layout="centered")
+
+# Inicializa as variáveis de controle de login na memória global do Streamlit
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
 if "nome_usuario" not in st.session_state:
     st.session_state["nome_usuario"] = ""
+if "tipo_usuario" not in st.session_state:
+    st.session_state["tipo_usuario"] = "" 
+
+# Cria e valida a estrutura das tabelas no banco de dados na inicialização do app
+criar_tabela_alunos()
 
 # ==============================================================================
-# 3. FUNÇÕES DE AUTENTICAÇÃO DO ADMINISTRADOR
+# 2. 🤖 MOTOR DE COBRANÇA AUTOMÁTICA EM SEGUNDO PLANO (BACKGROUND THREAD)
 # ==============================================================================
-def cadastrar_usuario(nome, email, senha):
-    """Criptografa a senha e salva o novo administrador no banco"""
-    try:
-        conn = obter_conexao()
-        cursor = conn.cursor()
-        
-        senha_bytes = senha.encode('utf-8')
-        senha_hash = bcrypt.hashpw(senha_bytes, bcrypt.gensalt()).decode('utf-8')
-        
-        query = "INSERT INTO usuarios_adm (nome, email, senha_hash) VALUES (%s, %s, %s);"
-        cursor.execute(query, (nome, email, senha_hash))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return True, "Usuário cadastrado com sucesso!"
-    except Exception as e:
-        if "unique constraint" in str(e).lower():
-            return False, "Este e-mail já está cadastrado."
-        return False, f"Erro na conexão com o banco: {e}"
+def enviar_email_automatico(nome, email):
+    """
+    Função interna do servidor para disparar o e-mail automático.
+    Espaço reservado para sua integração SMTP (smtplib).
+    """
+    print(f"[MOTOR AUTOMÁTICO] E-mail de cobrança enviado para: {nome} <{email}>")
+    return True
 
-def verificar_login(email, senha):
-    """Busca o administrador no banco e valida a senha criptografada"""
-    try:
-        conn = obter_conexao()
-        cursor = conn.cursor()
+def rotina_cobranca_mensal(dia_alvo, hora_alvo, minuto_alvo):
+    """
+    Loop perpétuo executado diretamente no núcleo do servidor.
+    Monitora o relógio silenciosamente sem travar a interface do site.
+    """
+    print("🤖 Monitor de cobrança automática da Lourenço Filho BJJ inicializado.")
+    while True:
+        agora = datetime.now()
         
+        # VALIDADOR DE TEMPO: Só executa se bater o Dia, a Hora e o Minuto exatos configurados
+        if agora.day == dia_alvo and agora.hour == hora_alvo and agora.minute == minuto_alvo:
+            print(f"⏰ Horário alvo atingido ({agora.strftime('%d/%m/%Y %H:%M')}). Varrendo banco de dados por inadimplentes...")
+            try:
+                conn = obtener_conexao()
+                cursor = conn.cursor()
+                
+                # Coleta o nome e e-mail dos alunos cujo pagamento_status está como 'Não OK'
+                cursor.execute("SELECT nome, email FROM alunos WHERE pagamento_status = 'Não OK';")
+                lista_devedores = cursor.fetchall()
+                
+                for nome, email in lista_devedores:
+                    enviar_email_automatico(nome, email)
+                    time.sleep(2) # Pausa de 2 segundos entre e-mails para evitar bloqueios por SPAM
+                
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                print(f"[ERRO NO MOTOR AUTOMÁTICO]: {e}")
+                
+            # Dorme por 65 segundos para o relógio virar e não reexecutar no mesmo minuto
+            time.sleep(65)
+            
+        time.sleep(30) # Avalia o relógio do servidor a cada 30 segundos para manter precisão
+
+# --- SEU PEDIDO: CONFIGURAÇÃO DO AGENDAMENTO PARA TODO DIA 19 ÀS 10:11 DA MANHÃ ---
+DIA_DO_DISPARO = 19
+HORA_DO_DISPARO = 10
+MINUTO_DO_DISPARO = 27
+
+# Inicializa a Thread em background de forma segura, evitando duplicações no servidor
+if not any(t.name == "ThreadCobrancaBJJ" for t in threading.enumerate()):
+    motor_cobranca = threading.Thread(
+        target=rotina_cobranca_mensal,
+        args=(DIA_DO_DISPARO, HORA_DO_DISPARO, MINUTO_DO_DISPARO),
+        name="ThreadCobrancaBJJ",
+        daemon=True # A Thread encerra suas atividades automaticamente se o Streamlit for desligado
+    )
+    motor_cobranca.start()
+
+# ==============================================================================
+# 3. FUNÇÕES DE AUTENTICAÇÃO (BANCO DE DADOS)
+# ==============================================================================
+def verificar_login_adm(email, senha):
+    """Valida as credenciais dos administradores na tabela usuarios_adm utilizando Bcrypt"""
+    try:
+        conn = obtener_conexao()
+        cursor = conn.cursor()
         query = "SELECT nome, senha_hash FROM usuarios_adm WHERE email = %s;"
         cursor.execute(query, (email,))
         resultado = cursor.fetchone()
-        
         cursor.close()
         conn.close()
-        
         if resultado:
-            nome_usuario, hash_banco = resultado
+            nome, hash_banco = resultado
+            # Compara a senha digitada com o hash criptografado salvo no banco
             if bcrypt.checkpw(senha.encode('utf-8'), hash_banco.encode('utf-8')):
-                return True, nome_usuario
-                
+                return True, nome
         return False, "E-mail ou senha incorretos."
     except Exception as e:
-        return False, f"Erro na conexão: {e}"
+        return False, f"Erro: {e}"
 
+def verificar_login_aluno(email, senha):
+    """Valida as credenciais dos alunos ativos na tabela alunos"""
+    try:
+        conn = obtener_conexao()
+        cursor = conn.cursor()
+        query = "SELECT nome, senha_hash FROM alunos WHERE email = %s;"
+        cursor.execute(query, (email,))
+        resultado = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if resultado:
+            nome_aluno, hash_banco = resultado
+            if hash_banco and bcrypt.checkpw(senha.encode('utf-8'), hash_banco.encode('utf-8')):
+                return True, nome_aluno
+        return False, "E-mail ou senha incorretos ou não aprovados."
+    except Exception as e:
+        return False, f"Erro: {e}"
+
+def cadastrar_usuario_adm(nome, email, senha):
+    """Gera o hash Bcrypt e insere um novo administrador no banco de dados"""
+    try:
+        conn = obtener_conexao()
+        cursor = conn.cursor()
+        # Criptografa a senha antes de enviar para o banco de dados
+        senha_hash = bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute("INSERT INTO usuarios_adm (nome, email, senha_hash) VALUES (%s, %s, %s);", (nome, email, senha_hash))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, "Administrador cadastrado!"
+    except Exception:
+        return False, "E-mail já cadastrado."
 
 # ==============================================================================
-# 4. FLUXO DE TELAS DO APLICATIVO
+# 4. FLUXO DE TELAS DO APLICATIVO (ROTEAMENTO DINÂMICO)
 # ==============================================================================
-
-# --- CASO O USUÁRIO ESTEJA LOGADO -> EXIBE O MENU PRINCIPAL COM AS ABAS ---
 if st.session_state["logado"]:
+    # --- FLUXO DO USUÁRIO CONECTADO / AUTENTICADO ---
+    aplicar_estilo_auth() # Carrega as regras da barra lateral escura
     
-    # Barra superior com o nome do ADM conectado e o botão de logout
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        st.title("🏋️‍♂️ Painel Geral - Lourenço")
-        st.caption(f"Administrador conectado: **{st.session_state['nome_usuario']}**")
-    with col2:
-        st.write("") 
-        if st.button("🚪 Sair"):
-            st.session_state["logado"] = False
-            st.session_state["nome_usuario"] = ""
-            st.rerun()
-
-    # --- BARRA LATERAL DO ADM COM O QR CODE ---
-    st.sidebar.markdown("### 📱 QR Code da Recepção")
-    st.sidebar.write("Deixe este QR Code visível para os alunos escanearem no balcão.")
+    try:
+        st.sidebar.image("img/logo_bjj.png", use_container_width=True)
+    except Exception:
+        st.sidebar.write("### 🥋 LOURENÇO FILHO BJJ")
+        
+    st.sidebar.markdown(f"Guerreiro: **{st.session_state['nome_usuario']}**")
+    st.sidebar.caption(f"Perfil: {st.session_state['tipo_usuario'].upper()}")
+    st.sidebar.write("---")
     
-    # IMPORTANTE: Altera para o teu Network URL atual que aparece no terminal (ex: http://192.168.0.15:8501)
-    LINK_REDE = "http://localhost:8501" 
-    
-    # Gera a imagem do QR Code em memória
-    qr = qrcode.QRCode(version=1, box_size=10, border=4)
-    qr.add_data(LINK_REDE)
-    qr.make(fit=True)
-    img_qr = qr.make_image(fill_color="black", back_color="white")
-    
-    # Converte a imagem para um formato que o Streamlit consegue desenhar
-    buf = BytesIO()
-    img_qr.save(buf, format="PNG")
-    byte_im = buf.getvalue()
-    
-    # Desenha o QR Code na barra lateral
-    st.sidebar.image(byte_im, caption="Escaneia para te matriculares")
+    # Renderização do menu lateral exclusivo do Administrador
+    if st.session_state["tipo_usuario"] == "adm":
+        st.sidebar.markdown("### 🥷 MENU PRINCIPAL")
+        tela_selecionada = st.sidebar.radio("Ir para:", ["📋 Gestão de Alunos", "💪 Gestão de Treinos", "💰 Controle Financeiro"])
+        st.sidebar.write("---")
+            
+    elif st.session_state["tipo_usuario"] == "aluno":
+        tela_selecionada = "👤 Área do Aluno"
 
-    st.write("---")
+    st.sidebar.write("")
+    # Botão de Logout: Limpa a sessão e recarrega o app no estado deslogado
+    if st.sidebar.button("🚪 Sair", use_container_width=True):
+        st.session_state["logado"] = False
+        st.session_state["nome_usuario"] = ""
+        st.session_state["tipo_usuario"] = ""
+        st.rerun()
 
-    # CRIAÇÃO DAS ABAS DO MENU PRINCIPAL
-    aba_alunos, aba_treinos, aba_financeiro = st.tabs([
-        "📋 Gestão de Alunos", 
-        "💪 Gestão de Treinos", 
-        "💰 Controle Financeiro"
-    ])
-
-    # ABA 1: Executa a tela que está isolada em modulos/cadastro.py
-    with aba_alunos:
-        exibir_tela_cadastro()
-
-    # ABA 2: Espaço reservado para os treinos
-    with aba_treinos:
-        st.subheader("💪 Fichas de Exercícios")
-        st.info("Espaço reservado para montar o treino A, B, C dos alunos.")
-
-    # ABA 3: Espaço reservado para o financeiro
-    with aba_financeiro:
-        st.subheader("💰 Caixa e Mensalidades")
-        st.info("Espaço reservado para fluxo de caixa e controle de adimplência.")
-
-
-# --- CASO NÃO ESTEJA LOGADO -> EXIBE TELA DE ACESSO / CADASTRO DE ADM ---
-else:
-    st.sidebar.title("Navegação")
-    opcao = st.sidebar.selectbox("Escolha uma opção", ["Login", "Área do Aluno (QR Code)", "Criar Conta ADM"])
-
-    if opcao == "Área do Aluno (QR Code)":
+    # Redirecionamento cirúrgico de telas com injeção isolada de CSS
+    if st.session_state["tipo_usuario"] == "adm":
+        if tela_selecionada == "📋 Gestão de Alunos":
+            st.markdown('<div class="color-strip-top"></div>', unsafe_allow_html=True) # Faixa decorativa superior
+            aplicar_estilo_cadastro() # Injeta o CSS focado em tabelas e listas
+            exibir_tela_cadastro()   # Abre o módulo de gerenciamento
+        elif tela_selecionada == "💪 Gestão de Treinos":
+            st.title("💪 Fichas de Exercícios (BJJ)")
+            st.info("Módulo em desenvolvimento.")
+        elif tela_selecionada == "💰 Controle Financeiro":
+            st.title("💰 Caixa e Mensalidades")
+            st.info("Módulo em desenvolvimento.")
+    elif st.session_state["tipo_usuario"] == "aluno":
+        aplicar_estilo_aluno() # Injeta o CSS focado nos inputs escuros e dourados do aluno
         exibir_formulario_aluno()
 
-    elif opcao == "Login":
-        st.title("🔐 Sistema de Gestão - Academia")
-        st.subheader("Área Restrita do Administrador")
+else:
+    # --- FLUXO DO USUÁRIO DESLOGADO (LOGIN / NOVA MATRÍCULA) ---
+    aplicar_estilo_auth() # Carrega os inputs pretos e botão entrar com luz na borda
+    st.markdown('<div class="color-strip-top"></div>', unsafe_allow_html=True)
+    
+    try:
+        st.image("img/logo_bjj.png", use_container_width=True)
+    except Exception:
+        st.title("🥋 LOURENÇO FILHO BJJ")
+        
+    st.sidebar.title("Acesso Unificado")
+    opcao = st.sidebar.radio("Escolha uma opção:", ["Login no Sistema", "Nova Matrícula (QR Code)", "Criar Conta ADM"])
+
+    if opcao == "Nova Matrícula (QR Code)":
+        aplicar_estilo_aluno() # Muda o layout para o formulário de matrícula
+        exibir_formulario_aluno()
+
+    elif opcao == "Login no Sistema":
+        st.title("🔐 Login Unificado")
+        # Seletor estilizado para definir o tipo de conta antes de submeter o formulário
+        tipo_login = st.segmented_control("Entrar como:", options=["🥷 Administrador", "👤 Aluno"], default="🥷 Administrador")
         
         with st.form("form_login"):
-            email_login = st.text_input("E-mail")
+            email_login = st.text_input("E-mail Cadastrado")
             senha_login = st.text_input("Senha", type="password")
-            botao_login = st.form_submit_button("Entrar")
+            botao_login = st.form_submit_button("Entrar", use_container_width=True)
             
         if botao_login:
             if not email_login or not senha_login:
-                st.warning("Preencha e-mail e senha!")
+                st.warning("Preencha todos os campos!")
             else:
                 with st.spinner("Autenticando..."):
-                    sucesso, info = verificar_login(email_login, senha_login)
+                    if tipo_login == "🥷 Administrador":
+                        sucesso, info = verificar_login_adm(email_login.lower().strip(), senha_login)
+                        tipo_perfil = "adm"
+                    else:
+                        sucesso, info = verificar_login_aluno(email_login.lower().strip(), senha_login)
+                        tipo_perfil = "aluno"
+                        
                 if sucesso:
+                    # Trava o estado de login na memória e atualiza a tela para entrar no painel
                     st.session_state["logado"] = True
                     st.session_state["nome_usuario"] = info
+                    st.session_state["tipo_usuario"] = tipo_perfil
                     st.rerun()
                 else:
                     st.error(info)
-
+                    
     elif opcao == "Criar Conta ADM":
-        st.title("🔐 Sistema de Gestão - Academia")
-        st.subheader("Criar Nova Conta de Administrador")
-        
+        st.title("🔐 Novo Administrador")
         with st.form("form_registro"):
             nome = st.text_input("Nome Completo")
             email = st.text_input("E-mail")
             senha = st.text_input("Senha", type="password")
-            botao_registrar = st.form_submit_button("Cadastrar")
-            
+            botao_registrar = st.form_submit_button("Cadastrar", use_container_width=True)
         if botao_registrar:
-            if not nome or not email or not senha:
-                st.warning("Preencha todos os campos!")
-            else:
-                with st.spinner("Conectando ao banco Neon..."):
-                    sucesso, msg = cadastrar_usuario(nome, email, senha)
-                if sucesso:
-                    st.success(msg)
-                else:
-                    st.error(msg)
+            sucesso, msg = cadastrar_usuario_adm(nome, email, senha)
+            st.success(msg) if sucesso else st.error(msg)
+            
+    st.markdown('<div class="color-strip-bottom"></div>', unsafe_allow_html=True) # Faixa decorativa inferior
