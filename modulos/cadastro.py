@@ -5,7 +5,7 @@ import time
 import urllib.parse
 import smtplib  # Biblioteca nativa para conexão direta SMTP
 from email.mime.text import MIMEText  # Estruturador do corpo do e-mail
-from Modulos.database import obtener_conexao
+from modulos.database import obtener_conexao
 
 # ==============================================================================
 # 🔑 CONFIGURAÇÃO DO SEU SERVIDOR DE E-MAIL (GMAIL DA ACADEMIA)

@@ -8,9 +8,9 @@ from datetime import datetime
 from io import BytesIO
 
 # IMPORTANDO AS TELAS E LOGICAS DOS MÓDULOS ISOLADOS
-from Modulos.cadastro import exibir_tela_cadastro
-from Modulos.aluno_publico import exibir_formulario_aluno
-from Modulos.database import obtener_conexao, criar_tabela_alunos
+from modulos.cadastro import exibir_tela_cadastro
+from modulos.aluno_publico import exibir_formulario_aluno
+from modulos.database import obtener_conexao, criar_tabela_alunos
 
 # IMPORTANDO OS DESIGNERS INJETÁVEIS DA PASTA STYLE
 from style.auth_style import aplicar_estilo_auth
